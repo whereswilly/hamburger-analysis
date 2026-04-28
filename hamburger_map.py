@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import folium
-from folium.plugins import MarkerCluster
+from folium.plugins import FastMarkerCluster
 from streamlit_folium import st_folium
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 from io import BytesIO
@@ -223,45 +223,41 @@ def build_single_map(subject: str, radius_km: float):
 
     m = folium.Map(location=[36.5, 127.8], zoom_start=7, tiles='cartodbpositron')
 
-    # Competitor dots — clustered per brand
+    # Competitor dots — FastMarkerCluster per brand (data passed as JS array, not Python objects)
     for brand in others:
         hex_c = BRAND_CFG[brand]['hex']
-        cluster = MarkerCluster(
-            name=brand,
+        data = [
+            [float(row['위도']), float(row['경도']), row['매장명'], str(row['주소'])]
+            for _, row in dfs[brand].iterrows()
+        ]
+        callback = (
+            f"function(row){{"
+            f"var m=L.circleMarker(new L.LatLng(row[0],row[1]),"
+            f"{{radius:5,color:'{hex_c}',fillColor:'{hex_c}',fill:true,fillOpacity:0.75,weight:1}});"
+            f"m.bindPopup('<b>[{brand}]</b> '+row[2]+'<br><small>'+row[3]+'</small>');"
+            f"m.bindTooltip('[{brand}] '+row[2]);"
+            f"return m;}}"
+        )
+        FastMarkerCluster(
+            data, callback=callback, name=brand,
             options={'maxClusterRadius': 30, 'disableClusteringAtZoom': 13}
         ).add_to(m)
-        for _, row in dfs[brand].iterrows():
-            folium.CircleMarker(
-                location=[row['위도'], row['경도']],
-                radius=5, color=hex_c, fill_color=hex_c,
-                fill=True, fill_opacity=0.75, weight=1,
-                popup=folium.Popup(
-                    f"<b>[{brand}]</b> {row['매장명']}<br><small>{row['주소']}</small>",
-                    max_width=220),
-                tooltip=f"[{brand}] {row['매장명']}"
-            ).add_to(cluster)
 
     subj_hex = BRAND_CFG[subject]['hex']
     subj_col = BRAND_CFG[subject]['folium']
 
     for _, store in result_df.iterrows():
-        nearby_html = ''
-        for brand in others:
-            nb = store['_nearby'].get(brand, [])
-            if nb:
-                items = ''.join(f'<li>{nm} <span style="color:#888">({d:.1f}km)</span></li>' for nm, d in nb)
-                nearby_html += (
-                    f'<div style="margin:3px 0"><span style="color:{BRAND_CFG[brand]["hex"]};font-weight:bold">'
-                    f'{brand} ({len(nb)})</span>'
-                    f'<ul style="margin:2px 0;padding-left:14px;line-height:1.5">{items}</ul></div>'
-                )
-
+        rows_html = ''.join(
+            f'<tr><td style="color:{BRAND_CFG[b]["hex"]};padding:1px 6px 1px 0">{b}</td>'
+            f'<td align="right"><b>{store[b]}</b></td></tr>'
+            for b in others if store[b] > 0
+        )
         popup_html = (
-            f'<div style="font-family:sans-serif;font-size:13px;width:280px;max-height:380px;overflow-y:auto">'
-            f'<b style="font-size:14px;color:{subj_hex}">{store["매장명"]}</b><br>'
+            f'<div style="font-family:sans-serif;font-size:13px;min-width:160px">'
+            f'<b style="color:{subj_hex}">{store["매장명"]}</b><br>'
             f'<small style="color:#666">{store["주소"]}</small>'
-            f'<hr style="margin:5px 0"><b>반경 {radius_km}km 이내</b>'
-            f'{nearby_html or "<p style=color:#999>없음</p>"}'
+            f'<hr style="margin:4px 0">'
+            f'<table>{rows_html or "<tr><td style=color:#999>경쟁점 없음</td></tr>"}</table>'
             f'</div>'
         )
         folium.Marker(
@@ -281,8 +277,55 @@ def build_single_map(subject: str, radius_km: float):
 @st.cache_resource
 def build_district_map(include_brands: tuple, exclude_brands: tuple, radius_km: float):
     districts = compute_districts(include_brands, exclude_brands, radius_km)
+    dfs = load_data()
     m = folium.Map(location=[36.5, 127.8], zoom_start=7, tiles='cartodbpositron')
 
+    # Build set of district member coordinates for selected brands (to avoid double-rendering)
+    district_store_keys = set()
+    for d in districts:
+        for b in include_brands:
+            for s in d['stores'][b]:
+                district_store_keys.add((b, round(s['lat'], 6), round(s['lon'], 6)))
+
+    # Background: all brands as FastMarkerCluster (small, semi-transparent)
+    unselected = [b for b in ALL_BRANDS if b not in include_brands]
+    for brand in unselected:
+        hex_c = BRAND_CFG[brand]['hex']
+        data = [
+            [float(row['위도']), float(row['경도']), row['매장명'], str(row['주소'])]
+            for _, row in dfs[brand].iterrows()
+        ]
+        cb = (
+            f"function(row){{"
+            f"var m=L.circleMarker(new L.LatLng(row[0],row[1]),"
+            f"{{radius:4,color:'{hex_c}',fillColor:'{hex_c}',fill:true,fillOpacity:0.35,weight:1}});"
+            f"m.bindPopup('<b>[{brand}]</b> '+row[2]+'<br><small>'+row[3]+'</small>');"
+            f"m.bindTooltip('[{brand}] '+row[2]);"
+            f"return m;}}"
+        )
+        FastMarkerCluster(data, callback=cb, name=brand,
+                          options={'maxClusterRadius': 30, 'disableClusteringAtZoom': 13}).add_to(m)
+
+    # Selected brands: non-district stores as faded background dots
+    for brand in include_brands:
+        hex_c = BRAND_CFG[brand]['hex']
+        data = [
+            [float(row['위도']), float(row['경도']), row['매장명'], str(row['주소'])]
+            for _, row in dfs[brand].iterrows()
+            if (brand, round(float(row['위도']), 6), round(float(row['경도']), 6)) not in district_store_keys
+        ]
+        cb = (
+            f"function(row){{"
+            f"var m=L.circleMarker(new L.LatLng(row[0],row[1]),"
+            f"{{radius:4,color:'{hex_c}',fillColor:'{hex_c}',fill:true,fillOpacity:0.4,weight:1}});"
+            f"m.bindPopup('<b>[{brand}]</b> '+row[2]+'<br><small>'+row[3]+'</small>');"
+            f"m.bindTooltip('[{brand}] '+row[2]);"
+            f"return m;}}"
+        )
+        FastMarkerCluster(data, callback=cb, name=brand,
+                          options={'maxClusterRadius': 30, 'disableClusteringAtZoom': 13}).add_to(m)
+
+    # District circles + highlighted member stores (thick white halo = selected)
     for d in districts:
         clat, clon = d['centroid']
 
@@ -303,11 +346,9 @@ def build_district_map(include_brands: tuple, exclude_brands: tuple, radius_km: 
             f'<ul style="margin:4px 0;padding-left:14px;line-height:1.6">{store_html}</ul>'
             f'</div>'
         )
-
         folium.Circle(
             [clat, clon], radius=radius_km * 1000,
-            color='#7B1FA2', weight=1.5,
-            fill=True, fill_opacity=0.07,
+            color='#7B1FA2', weight=1.5, fill=True, fill_opacity=0.07,
             popup=folium.Popup(popup_html, max_width=270),
             tooltip=f"District #{d['id']}  ({d['total']}개)"
         ).add_to(m)
@@ -327,16 +368,19 @@ def build_district_map(include_brands: tuple, exclude_brands: tuple, radius_km: 
             for s in d['stores'][b]:
                 folium.CircleMarker(
                     location=[s['lat'], s['lon']],
-                    radius=5, color=hex_c, fill_color=hex_c,
-                    fill=True, fill_opacity=0.85, weight=1.5,
+                    radius=7, color='white', fill_color=hex_c,
+                    fill=True, fill_opacity=0.95, weight=2.5,
                     popup=folium.Popup(
                         f"<b>[{b}]</b> {s['name']}<br><small>{s['addr']}</small>",
-                        max_width=220)
+                        max_width=220),
+                    tooltip=f"[{b}] {s['name']}"
                 ).add_to(m)
 
-    legend_items = ['<span style="color:#7B1FA2">○</span> District (반경 ' + str(radius_km) + 'km)'] + [
-        f'<span style="color:{BRAND_CFG[b]["hex"]}">●</span> {b}' for b in include_brands
-    ]
+    legend_items = (
+        ['<span style="color:#7B1FA2">○</span> District (반경 ' + str(radius_km) + 'km)']
+        + [f'<span style="color:{BRAND_CFG[b]["hex"]}">◉</span> {b} (선택)' for b in include_brands]
+        + [f'<span style="color:{BRAND_CFG[b]["hex"]}">·</span> {b}' for b in unselected]
+    )
     legend_html = (
         '<div style="position:fixed;bottom:30px;right:10px;z-index:1000;background:white;'
         'padding:10px 16px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.25);'
