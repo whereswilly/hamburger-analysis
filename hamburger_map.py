@@ -266,10 +266,6 @@ def build_single_map(subject: str, radius_km: float):
             tooltip=f"[{subject}] {store['매장명']}  (경쟁점 {store['총계']}개)",
             icon=folium.Icon(color=subj_col, icon='star', prefix='glyphicon')
         ).add_to(m)
-        folium.Circle(
-            [store['위도'], store['경도']], radius=radius_km * 1000,
-            color=subj_hex, fill=True, fill_opacity=0.05, weight=1.5
-        ).add_to(m)
 
     m.get_root().html.add_child(folium.Element(_legend(others, radius_km, subject)))
     return m
@@ -397,22 +393,36 @@ st.title('🍔 햄버거 경쟁점 분석')
 # ── Franchise selector row ────────────────────────────────────────────────────
 
 st.markdown(
-    '**브랜드 선택** &nbsp;—&nbsp; '
-    '브랜드를 **하나** 선택하면 해당 브랜드의 매장별 경쟁점 현황을 분석합니다. '
-    '**두 개 이상** 선택하면 선택한 브랜드가 모두 설정 반경 내에 공존하는 구역(**District**)을 탐색합니다. '
-    '선택하지 않은 브랜드가 인근에 있는 구역은 자동으로 제외됩니다.',
-    unsafe_allow_html=True,
+    '**브랜드 선택**  \n'
+    '· **✓ 1개** → 해당 브랜드의 매장별 경쟁점 현황 분석  \n'
+    '· **✓ 2개 이상** → ✓ 브랜드가 모두 반경 내에 공존하는 구역(**District**) 탐색  \n'
+    '· **✗** 표시한 브랜드가 District 내에 있으면 그 구역은 제외 (✗는 ✓가 2개 이상일 때만 적용)  \n'
+    '· ✓ · ✗ 모두 없는 브랜드는 지도에 배경으로만 표시됩니다',
 )
 brand_cols = st.columns(len(ALL_BRANDS))
 include_brands = []
+exclude_brands = []
 
 for i, brand in enumerate(ALL_BRANDS):
     with brand_cols[i]:
-        if st.checkbox(brand, key=f'inc_{brand}', value=(brand == '프랭크버거')):
+        hex_c = BRAND_CFG[brand]['hex']
+        st.markdown(
+            f'<div style="text-align:center;font-weight:bold;font-size:12px;'
+            f'color:{hex_c};padding:2px 0;line-height:1.2">{brand}</div>',
+            unsafe_allow_html=True
+        )
+        inc = st.checkbox('✓ 포함', key=f'inc_{brand}', value=(brand == '프랭크버거'))
+        exc = st.checkbox('✗ 제외', key=f'exc_{brand}', value=False)
+        if inc and exc:
+            st.caption(':red[충돌] ✗ 무시됨')
+            exc = False
+        if inc:
             include_brands.append(brand)
+        elif exc:
+            exclude_brands.append(brand)
 
 if not include_brands:
-    st.warning('브랜드를 하나 이상 선택해주세요.')
+    st.warning('브랜드를 하나 이상 ✓ 선택해주세요.')
     st.stop()
 
 
@@ -442,7 +452,6 @@ map_w, tbl_w = [int(x) for x in layout_opt.split(':')]
 # ── Determine mode ────────────────────────────────────────────────────────────
 
 single_mode = (len(include_brands) == 1)
-exclude_brands = ()
 subject = include_brands[0] if single_mode else None
 inc_tuple = tuple(include_brands)
 exc_tuple = tuple(exclude_brands)
@@ -461,10 +470,11 @@ else:
     result_df = None
 
 if not single_mode:
-    brands_str = ' + '.join(include_brands)
+    inc_str = ' + '.join(include_brands)
+    exc_str = (' · ✗ 제외: ' + ', '.join(exclude_brands)) if exclude_brands else ''
     st.info(
-        f'**District 모드** — ✓ 선택한 브랜드({brands_str})가 모두 반경 **{radius_km}km** 이내에 '
-        f'공존하는 구역을 표시합니다. 선택하지 않은 브랜드가 인근에 있는 구역은 자동으로 제외됩니다.  \n'
+        f'**District 모드** — ✓ {inc_str} 가 모두 반경 **{radius_km}km** 이내에 '
+        f'공존하는 구역을 표시합니다.{exc_str}  \n'
         f'현재 조건 충족 구역: **{len(districts)}개**'
     )
 
