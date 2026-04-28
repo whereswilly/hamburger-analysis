@@ -3,8 +3,8 @@ import pandas as pd
 import numpy as np
 import folium
 from folium.plugins import MarkerCluster
-from streamlit_folium import st_folium
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
+import streamlit.components.v1 as components
 from io import BytesIO
 from collections import defaultdict, Counter
 st.set_page_config(
@@ -461,6 +461,41 @@ def build_district_map(include_brands: tuple, exclude_brands: tuple, radius_km: 
     m.get_root().html.add_child(folium.Element(legend_html))
     return m
 
+
+# ── Cached map HTML rendering ─────────────────────────────────────────────────
+# Heavy work: building 5000+ folium markers + serializing the whole map to
+# HTML. Caching the rendered string means a row click (which only re-runs the
+# script — not the map) gets the cached HTML instantly. Streamlit's component
+# diffing then skips re-rendering the iframe because the HTML didn't change.
+
+@st.cache_data
+def get_map_html_and_var(mode: str, subject: str,
+                         inc_tuple: tuple, exc_tuple: tuple,
+                         radius_km: float):
+    """Returns (html_string, leaflet_map_variable_name) for the requested map."""
+    if mode == 'single':
+        m = build_single_map(subject, radius_km)
+    else:
+        m = build_district_map(inc_tuple, exc_tuple, radius_km)
+    return m.get_root().render(), m.get_name()
+
+
+def render_map_html(html: str, var_name: str, center, zoom: int, height: int = 640):
+    """Render cached map HTML, optionally injecting a setView call for nav.
+    The injected JS only changes when center/zoom changes, so on plain row
+    clicks the html string is identical → component iframe doesn't re-render."""
+    if center:
+        nav_js = (
+            f'<script>(function(){{var t=0;function go(){{'
+            f'if(typeof {var_name}!=="undefined"){{'
+            f'{var_name}.setView([{center[0]},{center[1]}],{zoom});'
+            f'}}else if(t++<50){{setTimeout(go,100);}}}}'
+            f'setTimeout(go,100);}})();</script>'
+        )
+        html = html + nav_js
+    components.html(html, height=height, scrolling=False)
+
+
 # ── UI ─────────────────────────────────────────────────────────────────────────
 
 st.title('🍔 햄버거 경쟁점 분석')
@@ -568,15 +603,11 @@ with map_col:
     st.subheader(label)
 
     if single_mode:
-        m = build_single_map(subject, radius_km)
-        map_key = f'map_s_{subject}_{radius_km}'
+        html, var_name = get_map_html_and_var('single', subject, (), (), radius_km)
     else:
-        m = build_district_map(inc_tuple, exc_tuple, radius_km)
-        map_key = f'map_d_{"_".join(inc_tuple)}_{radius_km}'
+        html, var_name = get_map_html_and_var('district', '', inc_tuple, exc_tuple, radius_km)
 
-    st_folium(m, center=center, zoom=zoom,
-              use_container_width=True, height=640, returned_objects=[],
-              key=map_key)
+    render_map_html(html, var_name, center, zoom, height=640)
 
 # ── Table column ──────────────────────────────────────────────────────────────
 
