@@ -614,30 +614,36 @@ with table_col:
             sel_name = str(sel[0]['매장명'])
             match = result_df[result_df['매장명'] == sel_name]
             if not match.empty:
+                # Detail panel — appears directly below the table for the
+                # selected row. Map navigation is decoupled: click the
+                # 지도로 이동 button to actually move the map.
                 new_center = [float(match.iloc[0]['위도']), float(match.iloc[0]['경도'])]
-                if new_center != st.session_state.map_center or sel_name != st.session_state.selected_id:
-                    st.session_state.map_center  = new_center
-                    st.session_state.map_zoom    = 14
-                    st.session_state.selected_id = sel_name
-                    st.rerun()
+                with st.container(border=True):
+                    head_left, head_right = st.columns([3, 1])
+                    with head_left:
+                        st.markdown(f'**📍 {sel_name}** &nbsp;·&nbsp; 반경 {radius_km}km 경쟁점')
+                    with head_right:
+                        if st.button('🗺 지도로 이동', key=f'goto_s_{sel_name}', use_container_width=True):
+                            st.session_state.map_center  = new_center
+                            st.session_state.map_zoom    = 14
+                            st.session_state.selected_id = sel_name
+                            st.rerun()
 
-            # Detail panel: nearby store names
-            nearby = match.iloc[0]['_nearby']
-            with st.expander(f'📍 {sel_name} — 반경 {radius_km}km 경쟁점 상세', expanded=True):
-                has_any = False
-                for brand in others:
-                    nb = nearby.get(brand, [])
-                    if nb:
-                        has_any = True
-                        hex_c = BRAND_CFG[brand]['hex']
-                        st.markdown(
-                            f'<span style="color:{hex_c};font-weight:bold">{brand}</span> ({len(nb)}개)',
-                            unsafe_allow_html=True
-                        )
-                        for nm, dist in nb:
-                            st.markdown(f'&nbsp;&nbsp;&nbsp;• {nm} `{dist:.2f}km`', unsafe_allow_html=True)
-                if not has_any:
-                    st.caption('반경 내 경쟁점 없음')
+                    nearby = match.iloc[0]['_nearby']
+                    has_any = False
+                    for brand in others:
+                        nb = nearby.get(brand, [])
+                        if nb:
+                            has_any = True
+                            hex_c = BRAND_CFG[brand]['hex']
+                            st.markdown(
+                                f'<span style="color:{hex_c};font-weight:bold">{brand}</span> ({len(nb)}개)',
+                                unsafe_allow_html=True
+                            )
+                            for nm, dist in nb:
+                                st.markdown(f'&nbsp;&nbsp;&nbsp;• {nm} `{dist:.2f}km`', unsafe_allow_html=True)
+                    if not has_any:
+                        st.caption('반경 내 경쟁점 없음')
 
         # Export — counts AND nearby store names per brand (with distances)
         export_rows = []
@@ -711,15 +717,22 @@ with table_col:
                 sel_did_str = str(sel[0]['District'])
                 sel_did = int(sel_did_str[1:])
                 new_center = [float(sel[0]['위도']), float(sel[0]['경도'])]
-                if new_center != st.session_state.map_center or sel_did != st.session_state.selected_id:
-                    st.session_state.map_center  = new_center
-                    st.session_state.map_zoom    = 14
-                    st.session_state.selected_id = sel_did
-                    st.rerun()
-
                 d_match = next((d for d in districts if d['id'] == sel_did), None)
                 if d_match:
-                    with st.expander(f'📍 {sel_did_str} 매장 목록', expanded=True):
+                    region = district_label(d_match)
+                    with st.container(border=True):
+                        head_left, head_right = st.columns([3, 1])
+                        with head_left:
+                            st.markdown(
+                                f'**📍 {sel_did_str}** &nbsp;·&nbsp; {region} &nbsp;·&nbsp; 매장 목록'
+                            )
+                        with head_right:
+                            if st.button('🗺 지도로 이동', key=f'goto_d_{sel_did}', use_container_width=True):
+                                st.session_state.map_center  = new_center
+                                st.session_state.map_zoom    = 14
+                                st.session_state.selected_id = sel_did
+                                st.rerun()
+
                         for b in include_brands:
                             stores = d_match['stores'][b]
                             if stores:
