@@ -449,7 +449,7 @@ with st.sidebar:
     layout_opt = st.select_slider(
         '비율',
         options=['3:7', '4:6', '5:5', '6:4', '7:3'],
-        value='4:6',
+        value='6:4',
         label_visibility='collapsed'
     )
     if st.button('전국 보기 초기화', use_container_width=True):
