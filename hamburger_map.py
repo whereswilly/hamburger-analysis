@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import folium
-from folium.plugins import FastMarkerCluster
+from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 from io import BytesIO
@@ -223,25 +223,23 @@ def build_single_map(subject: str, radius_km: float):
 
     m = folium.Map(location=[36.5, 127.8], zoom_start=7, tiles='cartodbpositron')
 
-    # Competitor dots — FastMarkerCluster per brand (data passed as JS array, not Python objects)
+    # Competitor dots — clustered per brand
     for brand in others:
         hex_c = BRAND_CFG[brand]['hex']
-        data = [
-            [float(row['위도']), float(row['경도']), row['매장명'], str(row['주소'])]
-            for _, row in dfs[brand].iterrows()
-        ]
-        callback = (
-            f"function(row){{"
-            f"var m=L.circleMarker(new L.LatLng(row[0],row[1]),"
-            f"{{radius:5,color:'{hex_c}',fillColor:'{hex_c}',fill:true,fillOpacity:0.75,weight:1}});"
-            f"m.bindPopup('<b>[{brand}]</b> '+row[2]+'<br><small>'+row[3]+'</small>');"
-            f"m.bindTooltip('[{brand}] '+row[2]);"
-            f"return m;}}"
-        )
-        FastMarkerCluster(
-            data, callback=callback, name=brand,
+        cluster = MarkerCluster(
+            name=brand,
             options={'maxClusterRadius': 30, 'disableClusteringAtZoom': 13}
         ).add_to(m)
+        for _, row in dfs[brand].iterrows():
+            folium.CircleMarker(
+                location=[row['위도'], row['경도']],
+                radius=5, color=hex_c, fill_color=hex_c,
+                fill=True, fill_opacity=0.75, weight=1,
+                popup=folium.Popup(
+                    f"<b>[{brand}]</b> {row['매장명']}<br><small>{row['주소']}</small>",
+                    max_width=220),
+                tooltip=f"[{brand}] {row['매장명']}"
+            ).add_to(cluster)
 
     subj_hex = BRAND_CFG[subject]['hex']
     subj_col = BRAND_CFG[subject]['folium']
@@ -266,6 +264,10 @@ def build_single_map(subject: str, radius_km: float):
             tooltip=f"[{subject}] {store['매장명']}  (경쟁점 {store['총계']}개)",
             icon=folium.Icon(color=subj_col, icon='star', prefix='glyphicon')
         ).add_to(m)
+        folium.Circle(
+            [store['위도'], store['경도']], radius=radius_km * 1000,
+            color=subj_hex, fill=True, fill_opacity=0.05, weight=1.5
+        ).add_to(m)
 
     m.get_root().html.add_child(folium.Element(_legend(others, radius_km, subject)))
     return m
@@ -283,43 +285,45 @@ def build_district_map(include_brands: tuple, exclude_brands: tuple, radius_km: 
             for s in d['stores'][b]:
                 district_store_keys.add((b, round(s['lat'], 6), round(s['lon'], 6)))
 
-    # Background: all brands as FastMarkerCluster (small, semi-transparent)
+    # Background: unselected brands as small faded clustered dots
     unselected = [b for b in ALL_BRANDS if b not in include_brands]
     for brand in unselected:
         hex_c = BRAND_CFG[brand]['hex']
-        data = [
-            [float(row['위도']), float(row['경도']), row['매장명'], str(row['주소'])]
-            for _, row in dfs[brand].iterrows()
-        ]
-        cb = (
-            f"function(row){{"
-            f"var m=L.circleMarker(new L.LatLng(row[0],row[1]),"
-            f"{{radius:4,color:'{hex_c}',fillColor:'{hex_c}',fill:true,fillOpacity:0.35,weight:1}});"
-            f"m.bindPopup('<b>[{brand}]</b> '+row[2]+'<br><small>'+row[3]+'</small>');"
-            f"m.bindTooltip('[{brand}] '+row[2]);"
-            f"return m;}}"
-        )
-        FastMarkerCluster(data, callback=cb, name=brand,
-                          options={'maxClusterRadius': 30, 'disableClusteringAtZoom': 13}).add_to(m)
+        cluster = MarkerCluster(
+            name=brand,
+            options={'maxClusterRadius': 30, 'disableClusteringAtZoom': 13}
+        ).add_to(m)
+        for _, row in dfs[brand].iterrows():
+            folium.CircleMarker(
+                location=[row['위도'], row['경도']],
+                radius=4, color=hex_c, fill_color=hex_c,
+                fill=True, fill_opacity=0.35, weight=1,
+                popup=folium.Popup(
+                    f"<b>[{brand}]</b> {row['매장명']}<br><small>{row['주소']}</small>",
+                    max_width=220),
+                tooltip=f"[{brand}] {row['매장명']}"
+            ).add_to(cluster)
 
-    # Selected brands: non-district stores as faded background dots
+    # Selected brands: non-district stores as faded clustered dots
     for brand in include_brands:
         hex_c = BRAND_CFG[brand]['hex']
-        data = [
-            [float(row['위도']), float(row['경도']), row['매장명'], str(row['주소'])]
-            for _, row in dfs[brand].iterrows()
-            if (brand, round(float(row['위도']), 6), round(float(row['경도']), 6)) not in district_store_keys
-        ]
-        cb = (
-            f"function(row){{"
-            f"var m=L.circleMarker(new L.LatLng(row[0],row[1]),"
-            f"{{radius:4,color:'{hex_c}',fillColor:'{hex_c}',fill:true,fillOpacity:0.4,weight:1}});"
-            f"m.bindPopup('<b>[{brand}]</b> '+row[2]+'<br><small>'+row[3]+'</small>');"
-            f"m.bindTooltip('[{brand}] '+row[2]);"
-            f"return m;}}"
-        )
-        FastMarkerCluster(data, callback=cb, name=brand,
-                          options={'maxClusterRadius': 30, 'disableClusteringAtZoom': 13}).add_to(m)
+        cluster = MarkerCluster(
+            name=brand,
+            options={'maxClusterRadius': 30, 'disableClusteringAtZoom': 13}
+        ).add_to(m)
+        for _, row in dfs[brand].iterrows():
+            key = (brand, round(float(row['위도']), 6), round(float(row['경도']), 6))
+            if key in district_store_keys:
+                continue
+            folium.CircleMarker(
+                location=[row['위도'], row['경도']],
+                radius=4, color=hex_c, fill_color=hex_c,
+                fill=True, fill_opacity=0.4, weight=1,
+                popup=folium.Popup(
+                    f"<b>[{brand}]</b> {row['매장명']}<br><small>{row['주소']}</small>",
+                    max_width=220),
+                tooltip=f"[{brand}] {row['매장명']}"
+            ).add_to(cluster)
 
     # District circles + highlighted member stores (thick white halo = selected)
     for d in districts:
@@ -480,31 +484,10 @@ if not single_mode:
 
 map_col, table_col = st.columns([map_w, tbl_w])
 
-# ── Map column ────────────────────────────────────────────────────────────────
-
-with map_col:
-    center = st.session_state.map_center or [float(all_lats.mean()), float(all_lons.mean())]
-    zoom   = st.session_state.map_zoom
-    if single_mode:
-        label = f'지도  —  반경 {radius_km}km'
-        if st.session_state.selected_id:
-            label += f'  |  선택: {st.session_state.selected_id}'
-    else:
-        label = f'지도  —  반경 {radius_km}km  |  District {len(districts)}개'
-    st.subheader(label)
-
-    if single_mode:
-        m = build_single_map(subject, radius_km)
-        map_key = f'map_s_{subject}_{radius_km}'
-    else:
-        m = build_district_map(inc_tuple, exc_tuple, radius_km)
-        map_key = f'map_d_{"_".join(inc_tuple)}_{radius_km}'
-
-    st_folium(m, center=center, zoom=zoom,
-              use_container_width=True, height=640, returned_objects=[],
-              key=map_key)
-
-# ── Table column ──────────────────────────────────────────────────────────────
+# ── Table column FIRST ────────────────────────────────────────────────────────
+# Renders AgGrid, processes selection, updates session state — all BEFORE the
+# map renders below. Visual layout (map on left, table on right) is set by
+# st.columns() and is independent of execution order.
 
 with table_col:
     if single_mode:
@@ -541,29 +524,28 @@ with table_col:
             match = result_df[result_df['매장명'] == sel_name]
             if not match.empty:
                 new_center = [float(match.iloc[0]['위도']), float(match.iloc[0]['경도'])]
-                if new_center != st.session_state.map_center or sel_name != st.session_state.selected_id:
-                    st.session_state.map_center  = new_center
-                    st.session_state.map_zoom    = 14
-                    st.session_state.selected_id = sel_name
-                    st.rerun()
+                # Update session state in-place; map below will use new values
+                st.session_state.map_center  = new_center
+                st.session_state.map_zoom    = 14
+                st.session_state.selected_id = sel_name
 
-            # Detail panel: nearby store names
-            nearby = match.iloc[0]['_nearby']
-            with st.expander(f'📍 {sel_name} — 반경 {radius_km}km 경쟁점 상세', expanded=True):
-                has_any = False
-                for brand in others:
-                    nb = nearby.get(brand, [])
-                    if nb:
-                        has_any = True
-                        hex_c = BRAND_CFG[brand]['hex']
-                        st.markdown(
-                            f'<span style="color:{hex_c};font-weight:bold">{brand}</span> ({len(nb)}개)',
-                            unsafe_allow_html=True
-                        )
-                        for nm, dist in nb:
-                            st.markdown(f'&nbsp;&nbsp;&nbsp;• {nm} `{dist:.2f}km`', unsafe_allow_html=True)
-                if not has_any:
-                    st.caption('반경 내 경쟁점 없음')
+                # Detail panel: nearby store names
+                nearby = match.iloc[0]['_nearby']
+                with st.expander(f'📍 {sel_name} — 반경 {radius_km}km 경쟁점 상세', expanded=True):
+                    has_any = False
+                    for brand in others:
+                        nb = nearby.get(brand, [])
+                        if nb:
+                            has_any = True
+                            hex_c = BRAND_CFG[brand]['hex']
+                            st.markdown(
+                                f'<span style="color:{hex_c};font-weight:bold">{brand}</span> ({len(nb)}개)',
+                                unsafe_allow_html=True
+                            )
+                            for nm, dist in nb:
+                                st.markdown(f'&nbsp;&nbsp;&nbsp;• {nm} `{dist:.2f}km`', unsafe_allow_html=True)
+                    if not has_any:
+                        st.caption('반경 내 경쟁점 없음')
 
         # Export
         buf = BytesIO()
@@ -621,11 +603,9 @@ with table_col:
                 sel_did_str = str(sel[0]['District'])
                 sel_did = int(sel_did_str[1:])
                 new_center = [float(sel[0]['위도']), float(sel[0]['경도'])]
-                if new_center != st.session_state.map_center or sel_did != st.session_state.selected_id:
-                    st.session_state.map_center  = new_center
-                    st.session_state.map_zoom    = 14
-                    st.session_state.selected_id = sel_did
-                    st.rerun()
+                st.session_state.map_center  = new_center
+                st.session_state.map_zoom    = 14
+                st.session_state.selected_id = sel_did
 
                 d_match = next((d for d in districts if d['id'] == sel_did), None)
                 if d_match:
@@ -652,3 +632,27 @@ with table_col:
                 mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                 use_container_width=True,
             )
+
+# ── Map column SECOND (uses session state already updated above) ──────────────
+
+with map_col:
+    center = st.session_state.map_center or [float(all_lats.mean()), float(all_lons.mean())]
+    zoom   = st.session_state.map_zoom
+    if single_mode:
+        label = f'지도  —  반경 {radius_km}km'
+        if st.session_state.selected_id:
+            label += f'  |  선택: {st.session_state.selected_id}'
+    else:
+        label = f'지도  —  반경 {radius_km}km  |  District {len(districts)}개'
+    st.subheader(label)
+
+    if single_mode:
+        m = build_single_map(subject, radius_km)
+        map_key = f'map_s_{subject}_{radius_km}'
+    else:
+        m = build_district_map(inc_tuple, exc_tuple, radius_km)
+        map_key = f'map_d_{"_".join(inc_tuple)}_{radius_km}'
+
+    st_folium(m, center=center, zoom=zoom,
+              use_container_width=True, height=640, returned_objects=[],
+              key=map_key)
