@@ -548,7 +548,7 @@ if not single_mode:
     brands_str = ' + '.join(include_brands)
     st.info(
         f'**District 모드** — ✓ 선택한 브랜드({brands_str})가 모두 반경 **{radius_km}km** 이내에 '
-        f'공존하는 구역을 표시합니다. 선택하지 않은 브랜드는 구역에 포함될 수도 있습니다.  \n'
+        f'공존하는 구역을 표시합니다. 포함이나 제외가 선택되지 않은 브랜드는 구역에 포함될 수도, 되지 않을 수도 있습니다.  \n'
         f'현재 조건 충족 구역: **{len(districts)}개**'
     )
 
