@@ -279,8 +279,60 @@ def build_single_map(subject: str, radius_km: float):
 
 def build_district_map(include_brands: tuple, exclude_brands: tuple, radius_km: float):
     districts = compute_districts(include_brands, exclude_brands, radius_km)
+    dfs = load_data()
     m = folium.Map(location=[36.5, 127.8], zoom_start=7, tiles='cartodbpositron')
 
+    # Track which selected-brand stores are in districts (so we don't draw them
+    # twice — once as background and once as halo).
+    district_keys = set()
+    for d in districts:
+        for b in include_brands:
+            for s in d['stores'][b]:
+                district_keys.add((b, round(s['lat'], 6), round(s['lon'], 6)))
+
+    # Background layer 1: unselected brands (small, faded)
+    for brand in ALL_BRANDS:
+        if brand in include_brands:
+            continue
+        hex_c = BRAND_CFG[brand]['hex']
+        cluster = MarkerCluster(
+            name=brand,
+            options={'maxClusterRadius': 30, 'disableClusteringAtZoom': 13}
+        ).add_to(m)
+        for _, row in dfs[brand].iterrows():
+            folium.CircleMarker(
+                location=[row['위도'], row['경도']],
+                radius=4, color=hex_c, fill_color=hex_c,
+                fill=True, fill_opacity=0.35, weight=1,
+                popup=folium.Popup(
+                    f"<b>[{brand}]</b> {row['매장명']}<br><small>{row['주소']}</small>",
+                    max_width=220),
+                tooltip=f"[{brand}] {row['매장명']}"
+            ).add_to(cluster)
+
+    # Background layer 2: selected-brand stores NOT in any district (faded)
+    for brand in include_brands:
+        hex_c = BRAND_CFG[brand]['hex']
+        cluster = MarkerCluster(
+            name=brand,
+            options={'maxClusterRadius': 30, 'disableClusteringAtZoom': 13}
+        ).add_to(m)
+        for _, row in dfs[brand].iterrows():
+            key = (brand, round(float(row['위도']), 6), round(float(row['경도']), 6))
+            if key in district_keys:
+                continue
+            folium.CircleMarker(
+                location=[row['위도'], row['경도']],
+                radius=4, color=hex_c, fill_color=hex_c,
+                fill=True, fill_opacity=0.4, weight=1,
+                popup=folium.Popup(
+                    f"<b>[{brand}]</b> {row['매장명']}<br><small>{row['주소']}</small>",
+                    max_width=220),
+                tooltip=f"[{brand}] {row['매장명']}"
+            ).add_to(cluster)
+
+    # Foreground: districts (purple circles + labels) and the highlighted member
+    # stores (white halo + brand fill — visually pops above the background dots)
     for d in districts:
         clat, clon = d['centroid']
 
@@ -325,16 +377,19 @@ def build_district_map(include_brands: tuple, exclude_brands: tuple, radius_km: 
             for s in d['stores'][b]:
                 folium.CircleMarker(
                     location=[s['lat'], s['lon']],
-                    radius=5, color=hex_c, fill_color=hex_c,
-                    fill=True, fill_opacity=0.85, weight=1.5,
+                    radius=7, color='white', fill_color=hex_c,
+                    fill=True, fill_opacity=0.95, weight=2.5,
                     popup=folium.Popup(
                         f"<b>[{b}]</b> {s['name']}<br><small>{s['addr']}</small>",
-                        max_width=220)
+                        max_width=220),
+                    tooltip=f"[{b}] {s['name']}"
                 ).add_to(m)
 
-    legend_items = ['<span style="color:#7B1FA2">○</span> District (반경 ' + str(radius_km) + 'km)'] + [
-        f'<span style="color:{BRAND_CFG[b]["hex"]}">●</span> {b}' for b in include_brands
-    ]
+    legend_items = (
+        ['<span style="color:#7B1FA2">○</span> District (반경 ' + str(radius_km) + 'km)']
+        + [f'<span style="color:{BRAND_CFG[b]["hex"]}">◉</span> {b} (✓ 포함)' for b in include_brands]
+        + [f'<span style="color:{BRAND_CFG[b]["hex"]}">·</span> {b}' for b in ALL_BRANDS if b not in include_brands]
+    )
     legend_html = (
         '<div style="position:fixed;bottom:30px;right:10px;z-index:1000;background:white;'
         'padding:10px 16px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.25);'
