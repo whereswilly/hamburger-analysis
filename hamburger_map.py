@@ -351,22 +351,34 @@ st.title('🍔 햄버거 경쟁점 분석')
 # ── Franchise selector row ────────────────────────────────────────────────────
 
 st.markdown(
-    '**브랜드 선택** &nbsp;—&nbsp; '
-    '브랜드를 **하나** 선택하면 해당 브랜드의 매장별 경쟁점 현황을 분석합니다. '
-    '**두 개 이상** 선택하면 선택한 브랜드가 모두 설정 반경 내에 공존하는 구역(**District**)을 탐색합니다. '
-    '선택하지 않은 브랜드가 인근에 있는 구역은 자동으로 제외됩니다.',
-    unsafe_allow_html=True,
+    '**브랜드 선택**  \n'
+    '· **✓ 1개** → 해당 브랜드의 매장별 경쟁점 현황 분석  \n'
+    '· **✓ 2개 이상** → ✓ 브랜드가 모두 반경 내에 공존하는 구역(**District**) 탐색  \n'
+    '· **✗** 표시한 브랜드가 District 인근에 있으면 그 구역은 제외 (✗는 ✓가 2개 이상일 때만 적용)'
 )
 brand_cols = st.columns(len(ALL_BRANDS))
 include_brands = []
+exclude_brands_list = []
 
 for i, brand in enumerate(ALL_BRANDS):
     with brand_cols[i]:
-        if st.checkbox(brand, key=f'inc_{brand}', value=(brand == '프랭크버거')):
+        st.markdown(
+            f'<div style="text-align:center;font-weight:bold;font-size:12px;'
+            f'color:{BRAND_CFG[brand]["hex"]};padding:2px 0;line-height:1.2">{brand}</div>',
+            unsafe_allow_html=True
+        )
+        inc = st.checkbox('✓ 포함', key=f'inc_{brand}', value=(brand == '프랭크버거'))
+        exc = st.checkbox('✗ 제외', key=f'exc_{brand}', value=False)
+        if inc and exc:
+            st.caption(':red[충돌] ✗ 무시됨')
+            exc = False
+        if inc:
             include_brands.append(brand)
+        elif exc:
+            exclude_brands_list.append(brand)
 
 if not include_brands:
-    st.warning('브랜드를 하나 이상 선택해주세요.')
+    st.warning('브랜드를 하나 이상 ✓ 선택해주세요.')
     st.stop()
 
 
@@ -396,7 +408,8 @@ map_w, tbl_w = [int(x) for x in layout_opt.split(':')]
 # ── Determine mode ────────────────────────────────────────────────────────────
 
 single_mode = (len(include_brands) == 1)
-exclude_brands = ()
+# ✗ exclude only applies in district mode (when ≥2 ✓ brands are selected)
+exclude_brands = exclude_brands_list if not single_mode else []
 subject = include_brands[0] if single_mode else None
 inc_tuple = tuple(include_brands)
 exc_tuple = tuple(exclude_brands)
