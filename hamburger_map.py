@@ -577,9 +577,19 @@ with table_col:
                 if not has_any:
                     st.caption('반경 내 경쟁점 없음')
 
-        # Export
+        # Export — counts AND nearby store names per brand (with distances)
+        export_rows = []
+        for _, r in sorted_df.iterrows():
+            out = {'매장명': r['매장명'], '주소': r['주소']}
+            for brand in others:
+                out[brand] = r[brand]
+                nb = r['_nearby'].get(brand, [])
+                out[f'{brand} 매장'] = ', '.join(f'{nm} ({d:.2f}km)' for nm, d in nb)
+            out['총계'] = r['총계']
+            export_rows.append(out)
+        export_df = pd.DataFrame(export_rows)
         buf = BytesIO()
-        display_df.to_excel(buf, index=False)
+        export_df.to_excel(buf, index=False)
         st.download_button(
             label='Excel로 내보내기',
             data=buf.getvalue(),
@@ -653,8 +663,16 @@ with table_col:
                                 for s in stores:
                                     st.markdown(f'&nbsp;&nbsp;&nbsp;• {s["name"]}', unsafe_allow_html=True)
 
-            # Export
-            export_df = dist_df.drop(columns=['위도', '경도'])
+            # Export — counts AND store names per brand for each district
+            export_rows = []
+            for d in districts:
+                out = {'District': f'D{d["id"]}'}
+                for b in include_brands:
+                    out[b] = d['counts'][b]
+                    out[f'{b} 매장'] = ', '.join(s['name'] for s in d['stores'][b])
+                out['총계'] = d['total']
+                export_rows.append(out)
+            export_df = pd.DataFrame(export_rows)
             buf = BytesIO()
             export_df.to_excel(buf, index=False)
             st.download_button(
