@@ -361,16 +361,6 @@ def build_district_map(include_brands: tuple, exclude_brands: tuple, radius_km: 
             popup=folium.Popup(popup_html, max_width=270),
             tooltip=f"District #{d['id']}  ({d['total']}개)"
         ).add_to(m)
-        folium.Marker(
-            [clat, clon],
-            tooltip=f"District #{d['id']}  ({d['total']}개)",
-            icon=folium.DivIcon(
-                html=f'<div style="font-size:11px;font-weight:bold;color:#7B1FA2;'
-                     f'background:white;border:1.5px solid #7B1FA2;border-radius:10px;'
-                     f'padding:1px 5px;white-space:nowrap">D{d["id"]}</div>',
-                icon_size=(30, 18), icon_anchor=(15, 9)
-            )
-        ).add_to(m)
 
         for b in include_brands:
             hex_c = BRAND_CFG[b]['hex']
@@ -384,6 +374,23 @@ def build_district_map(include_brands: tuple, exclude_brands: tuple, radius_km: 
                         max_width=220),
                     tooltip=f"[{b}] {s['name']}"
                 ).add_to(m)
+
+    # All district labels added LAST so they sit on top of every other layer.
+    # Leaflet draws later additions on top; doing this in a separate loop
+    # ensures one district's store dots can never cover another's label.
+    for d in districts:
+        clat, clon = d['centroid']
+        folium.Marker(
+            [clat, clon],
+            tooltip=f"District #{d['id']}  ({d['total']}개)",
+            icon=folium.DivIcon(
+                html=f'<div style="font-size:11px;font-weight:bold;color:#7B1FA2;'
+                     f'background:white;border:1.5px solid #7B1FA2;border-radius:10px;'
+                     f'padding:1px 5px;white-space:nowrap;'
+                     f'box-shadow:0 1px 3px rgba(0,0,0,0.3)">D{d["id"]}</div>',
+                icon_size=(30, 18), icon_anchor=(15, 9)
+            )
+        ).add_to(m)
 
     legend_items = (
         ['<span style="color:#7B1FA2">○</span> District (반경 ' + str(radius_km) + 'km)']
