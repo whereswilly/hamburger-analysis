@@ -43,32 +43,40 @@ def haversine(lat1, lon1, lat2_arr, lon2_arr):
     return 2 * R * np.arcsin(np.sqrt(a))
 
 
-# Map of metropolitan/special city names to short forms (서울특별시 → 서울)
-_METRO_SHORT = {
+# Short forms for the first address token (시/도)
+_REGION_SHORT = {
     '서울특별시': '서울', '부산광역시': '부산', '대구광역시': '대구',
     '인천광역시': '인천', '광주광역시': '광주', '대전광역시': '대전',
-    '울산광역시': '울산', '세종특별자치시': '세종', '제주특별자치도': '제주',
+    '울산광역시': '울산', '세종특별자치시': '세종',
+    '경기도': '경기', '강원도': '강원', '강원특별자치도': '강원',
+    '충청북도': '충북', '충청남도': '충남',
+    '전라북도': '전북', '전북특별자치도': '전북',
+    '전라남도': '전남',
+    '경상북도': '경북', '경상남도': '경남',
+    '제주특별자치도': '제주', '제주도': '제주',
 }
 
 
 def _addr_region(addr):
-    """Extract a short region label from a Korean address.
-    Returns the 구/시/군 token for metropolitan cities (e.g., '강남구'),
-    or '도-시' for province addresses (e.g., '경기 수원시').
+    """Extract '시/도 + 구/시/군' from a Korean address.
+    e.g.,
+      '서울특별시 강남구 ...'   → '서울 강남구'
+      '경기도 수원시 영통구 ...' → '경기 수원시'
+      '전라북도 전주시 ...'     → '전북 전주시'
     """
     if not addr:
         return ''
     parts = str(addr).split()
+    if not parts:
+        return ''
+    first = parts[0]
+    short = _REGION_SHORT.get(first, first)
     if len(parts) < 2:
-        return parts[0] if parts else ''
-    first, second = parts[0], parts[1]
-    if first in _METRO_SHORT:
-        # 서울특별시 강남구 ... → '강남구'
-        return second if second.endswith(('구', '시', '군')) else _METRO_SHORT[first]
-    if first.endswith('도'):
-        # 경기도 수원시 ... → '수원시'
-        return second if second.endswith(('시', '군', '구')) else first[:-1]
-    return first
+        return short
+    second = parts[1]
+    if second.endswith(('구', '시', '군')):
+        return f'{short} {second}'
+    return short
 
 
 def district_label(d):
@@ -424,7 +432,8 @@ def build_district_map(include_brands: tuple, exclude_brands: tuple, radius_km: 
         region = district_label(d)
         # Width grows with label content so the pill doesn't clip
         text = f'D{d["id"]} {region}' if region else f'D{d["id"]}'
-        approx_w = 22 + len(text) * 7  # rough width based on text length
+        # Korean chars take ~12px each at this font size; ASCII is narrower
+        approx_w = 18 + sum(12 if ord(c) > 127 else 7 for c in text)
         folium.Marker(
             [clat, clon],
             tooltip=f"District #{d['id']}  ({d['total']}개)  {region}".strip(),
@@ -665,7 +674,12 @@ with table_col:
         else:
             dist_rows = []
             for d in districts:
-                row = {'District': f'D{d["id"]}', '위도': d['centroid'][0], '경도': d['centroid'][1]}
+                row = {
+                    'District': f'D{d["id"]}',
+                    '지역': district_label(d),
+                    '위도': d['centroid'][0],
+                    '경도': d['centroid'][1],
+                }
                 for b in include_brands:
                     row[b] = d['counts'][b]
                 row['총계'] = d['total']
@@ -674,6 +688,7 @@ with table_col:
 
             gb = GridOptionsBuilder.from_dataframe(dist_df)
             gb.configure_column('District', pinned='left', width=80, suppressMovable=True)
+            gb.configure_column('지역', pinned='left', width=130, suppressMovable=True)
             gb.configure_column('위도', hide=True)
             gb.configure_column('경도', hide=True)
             for b in include_brands:
@@ -719,7 +734,7 @@ with table_col:
             # Export — counts AND store names per brand for each district
             export_rows = []
             for d in districts:
-                out = {'District': f'D{d["id"]}'}
+                out = {'District': f'D{d["id"]}', '지역': district_label(d)}
                 for b in include_brands:
                     out[b] = d['counts'][b]
                     out[f'{b} 매장'] = ', '.join(s['name'] for s in d['stores'][b])
