@@ -1,0 +1,8 @@
+streamlit>=1.30.0
+pandas
+numpy
+folium
+streamlit-folium>=0.27.0
+streamlit-aggrid==0.3.4.post3
+openpyxl
+requests
