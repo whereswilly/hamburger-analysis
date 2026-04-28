@@ -484,10 +484,28 @@ if not single_mode:
 
 map_col, table_col = st.columns([map_w, tbl_w])
 
-# ── Table column FIRST ────────────────────────────────────────────────────────
-# Renders AgGrid, processes selection, updates session state — all BEFORE the
-# map renders below. Visual layout (map on left, table on right) is set by
-# st.columns() and is independent of execution order.
+# ── Map column ────────────────────────────────────────────────────────────────
+
+with map_col:
+    center = st.session_state.map_center or [float(all_lats.mean()), float(all_lons.mean())]
+    zoom   = st.session_state.map_zoom
+    if single_mode:
+        label = f'지도  —  반경 {radius_km}km'
+        if st.session_state.selected_id:
+            label += f'  |  선택: {st.session_state.selected_id}'
+    else:
+        label = f'지도  —  반경 {radius_km}km  |  District {len(districts)}개'
+    st.subheader(label)
+
+    if single_mode:
+        m = build_single_map(subject, radius_km)
+    else:
+        m = build_district_map(inc_tuple, exc_tuple, radius_km)
+
+    st_folium(m, center=center, zoom=zoom,
+              use_container_width=True, height=640)
+
+# ── Table column ──────────────────────────────────────────────────────────────
 
 with table_col:
     if single_mode:
@@ -524,10 +542,11 @@ with table_col:
             match = result_df[result_df['매장명'] == sel_name]
             if not match.empty:
                 new_center = [float(match.iloc[0]['위도']), float(match.iloc[0]['경도'])]
-                # Update session state in-place; map below will use new values
-                st.session_state.map_center  = new_center
-                st.session_state.map_zoom    = 14
-                st.session_state.selected_id = sel_name
+                if new_center != st.session_state.map_center or sel_name != st.session_state.selected_id:
+                    st.session_state.map_center  = new_center
+                    st.session_state.map_zoom    = 14
+                    st.session_state.selected_id = sel_name
+                    st.rerun()
 
                 # Detail panel: nearby store names
                 nearby = match.iloc[0]['_nearby']
@@ -603,9 +622,11 @@ with table_col:
                 sel_did_str = str(sel[0]['District'])
                 sel_did = int(sel_did_str[1:])
                 new_center = [float(sel[0]['위도']), float(sel[0]['경도'])]
-                st.session_state.map_center  = new_center
-                st.session_state.map_zoom    = 14
-                st.session_state.selected_id = sel_did
+                if new_center != st.session_state.map_center or sel_did != st.session_state.selected_id:
+                    st.session_state.map_center  = new_center
+                    st.session_state.map_zoom    = 14
+                    st.session_state.selected_id = sel_did
+                    st.rerun()
 
                 d_match = next((d for d in districts if d['id'] == sel_did), None)
                 if d_match:
@@ -633,26 +654,3 @@ with table_col:
                 use_container_width=True,
             )
 
-# ── Map column SECOND (uses session state already updated above) ──────────────
-
-with map_col:
-    center = st.session_state.map_center or [float(all_lats.mean()), float(all_lons.mean())]
-    zoom   = st.session_state.map_zoom
-    if single_mode:
-        label = f'지도  —  반경 {radius_km}km'
-        if st.session_state.selected_id:
-            label += f'  |  선택: {st.session_state.selected_id}'
-    else:
-        label = f'지도  —  반경 {radius_km}km  |  District {len(districts)}개'
-    st.subheader(label)
-
-    if single_mode:
-        m = build_single_map(subject, radius_km)
-        map_key = f'map_s_{subject}_{radius_km}'
-    else:
-        m = build_district_map(inc_tuple, exc_tuple, radius_km)
-        map_key = f'map_d_{"_".join(inc_tuple)}_{radius_km}'
-
-    st_folium(m, center=center, zoom=zoom,
-              use_container_width=True, height=640, returned_objects=[],
-              key=map_key)
