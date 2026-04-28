@@ -554,41 +554,33 @@ if not single_mode:
 
 map_col, table_col = st.columns([map_w, tbl_w])
 
-# ── Map column (fragment — only reruns when the 지도로 이동 button calls
-#    st.rerun(); AgGrid row clicks reach the table fragment only) ────────────
+# ── Map column ────────────────────────────────────────────────────────────────
 
-@st.fragment
-def render_map_fragment():
-    with map_col:
-        center = st.session_state.map_center or [float(all_lats.mean()), float(all_lons.mean())]
-        zoom   = st.session_state.map_zoom
-        if single_mode:
-            label = f'지도  —  반경 {radius_km}km'
-            if st.session_state.selected_id:
-                label += f'  |  선택: {st.session_state.selected_id}'
-        else:
-            label = f'지도  —  반경 {radius_km}km  |  District {len(districts)}개'
-        st.subheader(label)
+with map_col:
+    center = st.session_state.map_center or [float(all_lats.mean()), float(all_lons.mean())]
+    zoom   = st.session_state.map_zoom
+    if single_mode:
+        label = f'지도  —  반경 {radius_km}km'
+        if st.session_state.selected_id:
+            label += f'  |  선택: {st.session_state.selected_id}'
+    else:
+        label = f'지도  —  반경 {radius_km}km  |  District {len(districts)}개'
+    st.subheader(label)
 
-        if single_mode:
-            m = build_single_map(subject, radius_km)
-            map_key = f'map_s_{subject}_{radius_km}'
-        else:
-            m = build_district_map(inc_tuple, exc_tuple, radius_km)
-            map_key = f'map_d_{"_".join(inc_tuple)}_{radius_km}'
+    if single_mode:
+        m = build_single_map(subject, radius_km)
+        map_key = f'map_s_{subject}_{radius_km}'
+    else:
+        m = build_district_map(inc_tuple, exc_tuple, radius_km)
+        map_key = f'map_d_{"_".join(inc_tuple)}_{radius_km}'
 
-        st_folium(m, center=center, zoom=zoom,
-                  use_container_width=True, height=640, returned_objects=[],
-                  key=map_key)
+    st_folium(m, center=center, zoom=zoom,
+              use_container_width=True, height=640, returned_objects=[],
+              key=map_key)
 
-render_map_fragment()
+# ── Table column ──────────────────────────────────────────────────────────────
 
-# ── Table column (fragment — AgGrid row clicks rerun ONLY this fragment, so
-#    the heavy map build doesn't repeat on every click) ──────────────────────
-
-@st.fragment
-def render_table_fragment():
-  with table_col:
+with table_col:
     if single_mode:
         # ── Single mode table ─────────────────────────────────────────────────
         others = [b for b in ALL_BRANDS if b != subject]
@@ -701,7 +693,7 @@ def render_table_fragment():
             dist_df = pd.DataFrame(dist_rows)
 
             gb = GridOptionsBuilder.from_dataframe(dist_df)
-            gb.configure_column('District', pinned='left', width=55, suppressMovable=True)
+            gb.configure_column('District', pinned='left', width=80, suppressMovable=True)
             gb.configure_column('지역', pinned='left', width=130, suppressMovable=True)
             gb.configure_column('위도', hide=True)
             gb.configure_column('경도', hide=True)
@@ -771,5 +763,3 @@ def render_table_fragment():
                 mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                 use_container_width=True,
             )
-
-render_table_fragment()
