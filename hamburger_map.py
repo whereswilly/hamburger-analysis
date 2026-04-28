@@ -7,11 +7,14 @@ from streamlit_folium import st_folium
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 from io import BytesIO
 from collections import defaultdict
+import base64
+import os
 
 st.set_page_config(
     page_title='햄버거 경쟁점 분석',
     page_icon='🍔',
-    layout='wide'
+    layout='wide',
+    initial_sidebar_state='collapsed',
 )
 
 for key, default in [('map_center', None), ('map_zoom', 7), ('selected_id', None), ('mode', 'single')]:
@@ -27,10 +30,59 @@ BRAND_CFG = {
     '버거킹':       {'hex': '#E65100', 'folium': 'orange',  'folium_sel': 'darkred'},
     '맥도날드':     {'hex': '#F9A825', 'folium': 'beige',   'folium_sel': 'orange'},
     '롯데리아':     {'hex': '#1565C0', 'folium': 'blue',    'folium_sel': 'darkblue'},
-    '맘스터치':     {'hex': '#C2185B', 'folium': 'pink',    'folium_sel': 'red'},
-    'KFC':          {'hex': '#BF360C', 'folium': 'darkred', 'folium_sel': 'darkred'},
+    '맘스터치':     {'hex': '#AD1457', 'folium': 'pink',    'folium_sel': 'red'},
+    'KFC':          {'hex': '#4E342E', 'folium': 'darkred', 'folium_sel': 'darkred'},
     '노브랜드버거': {'hex': '#546E7A', 'folium': 'gray',    'folium_sel': 'black'},
 }
+
+# ── Logo loading ───────────────────────────────────────────────────────────────
+
+_LOGO_DIR = 'Hamburger Competitors/Logos'
+_LOGO_FILES = {
+    '프랭크버거':   ('Frank.png',           'png'),
+    '버거킹':       ('버거킹.svg',           'svg+xml'),
+    '맥도날드':     ('McDonalds.svg',        'svg+xml'),
+    '롯데리아':     ('롯데리아.png',         'png'),
+    '맘스터치':     ('Momstouch Logo.svg',   'svg+xml'),
+    'KFC':          ('KFC.png',              'png'),
+    '노브랜드버거': ('NBB.png',              'png'),
+}
+_CSS_KEY = {
+    '프랭크버거': 'frank', '버거킹': 'bk', '맥도날드': 'mc',
+    '롯데리아': 'lotteria', '맘스터치': 'momstouch', 'KFC': 'kfc', '노브랜드버거': 'nbb',
+}
+
+LOGO_URI = {}
+for _brand, (_fname, _ftype) in _LOGO_FILES.items():
+    try:
+        with open(os.path.join(_LOGO_DIR, _fname), 'rb') as _f:
+            LOGO_URI[_brand] = f'data:image/{_ftype};base64,{base64.b64encode(_f.read()).decode()}'
+    except Exception:
+        LOGO_URI[_brand] = None
+
+
+def _logo_css(brands):
+    lines = ['<style>']
+    for b in brands:
+        if LOGO_URI.get(b):
+            lines.append(
+                f'.li-{_CSS_KEY[b]}'
+                f'{{background:url("{LOGO_URI[b]}")center/contain no-repeat;}}'
+            )
+    lines.append('</style>')
+    return '\n'.join(lines)
+
+
+def _logo_icon(brand, size=22, border=None, circle=False):
+    if not LOGO_URI.get(brand):
+        return None
+    r = 'border-radius:50%;' if circle else 'border-radius:3px;'
+    bd = f'border:1.5px solid {border};' if border else ''
+    html = (
+        f'<div class="li-{_CSS_KEY[brand]}" style="width:{size}px;height:{size}px;'
+        f'background-color:#fff;box-shadow:0 1px 4px rgba(0,0,0,.4);{r}{bd}"></div>'
+    )
+    return folium.DivIcon(html=html, icon_size=(size, size), icon_anchor=(size // 2, size // 2))
 
 # ── Utilities ──────────────────────────────────────────────────────────────────
 
@@ -129,8 +181,7 @@ def compute_districts(include_brands: tuple, exclude_brands: tuple, radius_km: f
     inc = list(include_brands)
     exc = list(exclude_brands)
 
-    # Build node list from all include-brand stores
-    nodes = []   # (brand, lat, lon, name, addr)
+    nodes = []
     for brand in inc:
         for _, row in dfs[brand].iterrows():
             nodes.append((brand, float(row['위도']), float(row['경도']),
@@ -143,7 +194,6 @@ def compute_districts(include_brands: tuple, exclude_brands: tuple, radius_km: f
     lats = np.array([nd[1] for nd in nodes])
     lons = np.array([nd[2] for nd in nodes])
 
-    # Union-Find connected components
     parent = list(range(n))
     def find(x):
         while parent[x] != x:
@@ -160,19 +210,16 @@ def compute_districts(include_brands: tuple, exclude_brands: tuple, radius_km: f
         for offset in np.where(dists <= radius_km)[0]:
             union(i, i + 1 + int(offset))
 
-    # Group into components
     comps = defaultdict(list)
     for i in range(n):
         comps[find(i)].append(i)
 
     districts = []
     for members in comps.values():
-        # Must have all include brands
         brands_in = {nodes[i][0] for i in members}
         if not all(b in brands_in for b in inc):
             continue
 
-        # Must have no exclude brand within radius of any member
         m_lats = lats[members]
         m_lons = lons[members]
         excluded = False
@@ -220,15 +267,16 @@ def _legend(brands, radius_km, subject_label):
         '<b>범례</b><br>' + '<br>'.join(items) + '</div>'
     )
 
-@st.cache_data
+@st.cache_resource
 def build_single_map(subject: str, radius_km: float):
     dfs = load_data()
     result_df = compute_single(subject, radius_km)
     others = [b for b in ALL_BRANDS if b != subject]
 
     m = folium.Map(location=[36.5, 127.8], zoom_start=7, tiles='cartodbpositron')
+    m.get_root().html.add_child(folium.Element(_logo_css(ALL_BRANDS)))
 
-    # Competitor dots — clustered per brand for fast rendering
+    # Competitor markers — clustered per brand, logo icons when available
     for brand in others:
         hex_c = BRAND_CFG[brand]['hex']
         cluster = MarkerCluster(
@@ -236,17 +284,22 @@ def build_single_map(subject: str, radius_km: float):
             options={'maxClusterRadius': 30, 'disableClusteringAtZoom': 13}
         ).add_to(m)
         for _, row in dfs[brand].iterrows():
-            folium.CircleMarker(
-                location=[row['위도'], row['경도']],
-                radius=5, color=hex_c, fill_color=hex_c,
-                fill=True, fill_opacity=0.75, weight=1,
-                popup=folium.Popup(
-                    f"<b>[{brand}]</b> {row['매장명']}<br><small>{row['주소']}</small>",
-                    max_width=220)
-            ).add_to(cluster)
+            popup = folium.Popup(
+                f"<b>[{brand}]</b> {row['매장명']}<br><small>{row['주소']}</small>",
+                max_width=220)
+            tip = f"[{brand}] {row['매장명']}"
+            icon = _logo_icon(brand, 22, hex_c)
+            if icon:
+                folium.Marker([row['위도'], row['경도']], popup=popup, tooltip=tip,
+                              icon=icon).add_to(cluster)
+            else:
+                folium.CircleMarker(
+                    [row['위도'], row['경도']],
+                    radius=5, color=hex_c, fill_color=hex_c,
+                    fill=True, fill_opacity=0.75, weight=1,
+                    popup=popup, tooltip=tip).add_to(cluster)
 
     subj_hex = BRAND_CFG[subject]['hex']
-    subj_col = BRAND_CFG[subject]['folium']
 
     for _, store in result_df.iterrows():
         nearby_html = ''
@@ -268,11 +321,14 @@ def build_single_map(subject: str, radius_km: float):
             f'{nearby_html or "<p style=color:#999>없음</p>"}'
             f'</div>'
         )
+        subj_icon = _logo_icon(subject, 32, subj_hex, circle=True)
+        if subj_icon is None:
+            subj_icon = folium.Icon(color=BRAND_CFG[subject]['folium'], icon='star', prefix='glyphicon')
         folium.Marker(
-            location=[store['위도'], store['경도']],
+            [store['위도'], store['경도']],
             popup=folium.Popup(popup_html, max_width=300),
             tooltip=f"[{subject}] {store['매장명']}  (경쟁점 {store['총계']}개)",
-            icon=folium.Icon(color=subj_col, icon='star', prefix='glyphicon')
+            icon=subj_icon
         ).add_to(m)
         folium.Circle(
             [store['위도'], store['경도']], radius=radius_km * 1000,
@@ -282,10 +338,11 @@ def build_single_map(subject: str, radius_km: float):
     m.get_root().html.add_child(folium.Element(_legend(others, radius_km, subject)))
     return m
 
-@st.cache_data
+@st.cache_resource
 def build_district_map(include_brands: tuple, exclude_brands: tuple, radius_km: float):
     districts = compute_districts(include_brands, exclude_brands, radius_km)
     m = folium.Map(location=[36.5, 127.8], zoom_start=7, tiles='cartodbpositron')
+    m.get_root().html.add_child(folium.Element(_logo_css(list(include_brands))))
 
     for d in districts:
         clat, clon = d['centroid']
@@ -326,19 +383,27 @@ def build_district_map(include_brands: tuple, exclude_brands: tuple, radius_km: 
             )
         ).add_to(m)
 
-        # Individual store dots within the district
         for b in include_brands:
             hex_c = BRAND_CFG[b]['hex']
             for s in d['stores'][b]:
-                folium.CircleMarker(
-                    location=[s['lat'], s['lon']],
-                    radius=5,
-                    color=hex_c, fill_color=hex_c,
-                    fill=True, fill_opacity=0.85, weight=1.5,
-                    popup=folium.Popup(
-                        f"<b>[{b}]</b> {s['name']}<br><small>{s['addr']}</small>",
-                        max_width=220)
-                ).add_to(m)
+                icon = _logo_icon(b, 22, hex_c)
+                if icon:
+                    folium.Marker(
+                        [s['lat'], s['lon']],
+                        popup=folium.Popup(
+                            f"<b>[{b}]</b> {s['name']}<br><small>{s['addr']}</small>",
+                            max_width=220),
+                        icon=icon
+                    ).add_to(m)
+                else:
+                    folium.CircleMarker(
+                        [s['lat'], s['lon']],
+                        radius=5, color=hex_c, fill_color=hex_c,
+                        fill=True, fill_opacity=0.85, weight=1.5,
+                        popup=folium.Popup(
+                            f"<b>[{b}]</b> {s['name']}<br><small>{s['addr']}</small>",
+                            max_width=220)
+                    ).add_to(m)
 
     legend_items = ['<span style="color:#7B1FA2">○</span> District (반경 ' + str(radius_km) + 'km)'] + [
         f'<span style="color:{BRAND_CFG[b]["hex"]}">●</span> {b}' for b in include_brands
@@ -358,19 +423,19 @@ st.title('🍔 햄버거 경쟁점 분석')
 
 # ── Franchise selector row ────────────────────────────────────────────────────
 
-st.markdown('#### 브랜드 선택')
+st.markdown(
+    '**브랜드 선택** &nbsp;—&nbsp; '
+    '브랜드를 **하나** 선택하면 해당 브랜드의 매장별 경쟁점 현황을 분석합니다. '
+    '**두 개 이상** 선택하면 선택한 브랜드가 모두 설정 반경 내에 공존하는 구역(**District**)을 탐색합니다. '
+    '선택하지 않은 브랜드가 인근에 있는 구역은 자동으로 제외됩니다.',
+    unsafe_allow_html=True,
+)
 brand_cols = st.columns(len(ALL_BRANDS))
 include_brands = []
 
 for i, brand in enumerate(ALL_BRANDS):
     with brand_cols[i]:
-        hex_c = BRAND_CFG[brand]['hex']
-        st.markdown(
-            f'<div style="text-align:center;font-weight:bold;font-size:12px;'
-            f'color:{hex_c};padding:2px 0">{brand}</div>',
-            unsafe_allow_html=True
-        )
-        if st.checkbox('✓', key=f'inc_{brand}', value=(brand == '프랭크버거')):
+        if st.checkbox(brand, key=f'inc_{brand}', value=(brand == '프랭크버거')):
             include_brands.append(brand)
 
 if not include_brands:
@@ -404,7 +469,7 @@ map_w, tbl_w = [int(x) for x in layout_opt.split(':')]
 # ── Determine mode ────────────────────────────────────────────────────────────
 
 single_mode = (len(include_brands) == 1)
-exclude_brands = ()  # unselected brands are implicitly excluded in district mode
+exclude_brands = ()
 subject = include_brands[0] if single_mode else None
 inc_tuple = tuple(include_brands)
 exc_tuple = tuple(exclude_brands)
@@ -447,11 +512,14 @@ with map_col:
 
     if single_mode:
         m = build_single_map(subject, radius_km)
+        map_key = f'map_s_{subject}_{radius_km}'
     else:
         m = build_district_map(inc_tuple, exc_tuple, radius_km)
+        map_key = f'map_d_{"_".join(inc_tuple)}_{radius_km}'
 
     st_folium(m, center=center, zoom=zoom,
-              use_container_width=True, height=640, returned_objects=[])
+              use_container_width=True, height=640, returned_objects=[],
+              key=map_key)
 
 # ── Table column ──────────────────────────────────────────────────────────────
 
@@ -567,7 +635,7 @@ with table_col:
 
             sel = response['selected_rows']
             if sel is not None and len(sel) > 0:
-                sel_did_str = str(sel[0]['District'])  # e.g. "D3"
+                sel_did_str = str(sel[0]['District'])
                 sel_did = int(sel_did_str[1:])
                 new_center = [float(sel[0]['위도']), float(sel[0]['경도'])]
                 if new_center != st.session_state.map_center or sel_did != st.session_state.selected_id:
@@ -576,7 +644,6 @@ with table_col:
                     st.session_state.selected_id = sel_did
                     st.rerun()
 
-                # Detail panel
                 d_match = next((d for d in districts if d['id'] == sel_did), None)
                 if d_match:
                     with st.expander(f'📍 {sel_did_str} 매장 목록', expanded=True):
