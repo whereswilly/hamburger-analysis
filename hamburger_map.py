@@ -6,7 +6,7 @@ from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 from io import BytesIO
-from collections import defaultdict
+from collections import defaultdict, Counter
 st.set_page_config(
     page_title='햄버거 경쟁점 분석',
     page_icon='🍔',
@@ -41,6 +41,47 @@ def haversine(lat1, lon1, lat2_arr, lon2_arr):
     rlon2 = np.radians(np.asarray(lon2_arr, dtype=float))
     a = np.sin((rlat2 - rlat1) / 2)**2 + np.cos(rlat1) * np.cos(rlat2) * np.sin((rlon2 - rlon1) / 2)**2
     return 2 * R * np.arcsin(np.sqrt(a))
+
+
+# Map of metropolitan/special city names to short forms (서울특별시 → 서울)
+_METRO_SHORT = {
+    '서울특별시': '서울', '부산광역시': '부산', '대구광역시': '대구',
+    '인천광역시': '인천', '광주광역시': '광주', '대전광역시': '대전',
+    '울산광역시': '울산', '세종특별자치시': '세종', '제주특별자치도': '제주',
+}
+
+
+def _addr_region(addr):
+    """Extract a short region label from a Korean address.
+    Returns the 구/시/군 token for metropolitan cities (e.g., '강남구'),
+    or '도-시' for province addresses (e.g., '경기 수원시').
+    """
+    if not addr:
+        return ''
+    parts = str(addr).split()
+    if len(parts) < 2:
+        return parts[0] if parts else ''
+    first, second = parts[0], parts[1]
+    if first in _METRO_SHORT:
+        # 서울특별시 강남구 ... → '강남구'
+        return second if second.endswith(('구', '시', '군')) else _METRO_SHORT[first]
+    if first.endswith('도'):
+        # 경기도 수원시 ... → '수원시'
+        return second if second.endswith(('시', '군', '구')) else first[:-1]
+    return first
+
+
+def district_label(d):
+    """Most common 구/시/군 label across the stores in a district."""
+    labels = []
+    for stores in d['stores'].values():
+        for s in stores:
+            r = _addr_region(s.get('addr', ''))
+            if r:
+                labels.append(r)
+    if not labels:
+        return ''
+    return Counter(labels).most_common(1)[0][0]
 
 @st.cache_data
 def load_data():
@@ -380,15 +421,20 @@ def build_district_map(include_brands: tuple, exclude_brands: tuple, radius_km: 
     # ensures one district's store dots can never cover another's label.
     for d in districts:
         clat, clon = d['centroid']
+        region = district_label(d)
+        # Width grows with label content so the pill doesn't clip
+        text = f'D{d["id"]} {region}' if region else f'D{d["id"]}'
+        approx_w = 22 + len(text) * 7  # rough width based on text length
         folium.Marker(
             [clat, clon],
-            tooltip=f"District #{d['id']}  ({d['total']}개)",
+            tooltip=f"District #{d['id']}  ({d['total']}개)  {region}".strip(),
             icon=folium.DivIcon(
                 html=f'<div style="font-size:11px;font-weight:bold;color:#7B1FA2;'
                      f'background:white;border:1.5px solid #7B1FA2;border-radius:10px;'
-                     f'padding:1px 5px;white-space:nowrap;'
-                     f'box-shadow:0 1px 3px rgba(0,0,0,0.3)">D{d["id"]}</div>',
-                icon_size=(30, 18), icon_anchor=(15, 9)
+                     f'padding:1px 6px;white-space:nowrap;'
+                     f'box-shadow:0 1px 3px rgba(0,0,0,0.3);'
+                     f'display:inline-block">{text}</div>',
+                icon_size=(approx_w, 18), icon_anchor=(approx_w // 2, 9)
             )
         ).add_to(m)
 
