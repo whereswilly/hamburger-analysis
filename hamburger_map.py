@@ -170,7 +170,10 @@ def compute_single(subject: str, radius_km: float):
 # ── Analysis: district mode ───────────────────────────────────────────────────
 
 @st.cache_data
-def compute_districts(include_brands: tuple, exclude_brands: tuple, radius_km: float):
+def compute_districts_union(include_brands: tuple, exclude_brands: tuple, radius_km: float):
+    """Union-Find clustering — kept for reference. NOT used in the UI.
+    Known issue: transitive chaining can produce districts whose stores extend
+    beyond radius_km from the displayed centroid circle."""
     if len(include_brands) < 2:
         return []
 
@@ -251,6 +254,91 @@ def compute_districts(include_brands: tuple, exclude_brands: tuple, radius_km: f
 
     return districts
 
+
+@st.cache_data
+def compute_districts_anchor(include_brands: tuple, exclude_brands: tuple, radius_km: float):
+    """Anchor enumeration + frozenset dedup.
+
+    Every included-brand store acts as a candidate anchor.  For each anchor,
+    we collect every included-brand store within radius_km — forming one
+    candidate district.  Because every member is within radius_km of the
+    anchor, the displayed circle of radius_km centred on the anchor is
+    guaranteed to contain all member stores (no transitive-chaining artefacts).
+
+    Identical store sets (same frozenset of brand+name pairs) are deduplicated;
+    the first anchor that produced the set becomes the district centroid.
+    """
+    if len(include_brands) < 2:
+        return []
+
+    dfs = load_data()
+    inc = list(include_brands)
+    exc = list(exclude_brands)
+
+    all_stores = []
+    for brand in inc:
+        for _, row in dfs[brand].iterrows():
+            all_stores.append((brand, float(row['위도']), float(row['경도']),
+                               row['매장명'], row['주소']))
+    if not all_stores:
+        return []
+
+    all_lats = np.array([s[1] for s in all_stores])
+    all_lons = np.array([s[2] for s in all_stores])
+
+    exc_arrays = []
+    for brand in exc:
+        exc_df = dfs.get(brand, pd.DataFrame())
+        if len(exc_df) > 0:
+            exc_arrays.append((exc_df['위도'].values.astype(float),
+                               exc_df['경도'].values.astype(float)))
+
+    seen = {}  # frozenset -> district dict
+
+    for anchor in all_stores:
+        a_brand, a_lat, a_lon, a_name, a_addr = anchor
+
+        dists = haversine(a_lat, a_lon, all_lats, all_lons)
+        idx = np.where(dists <= radius_km)[0]
+
+        brands_present = {all_stores[i][0] for i in idx}
+        if not all(b in brands_present for b in inc):
+            continue
+
+        key = frozenset((all_stores[i][0], all_stores[i][3]) for i in idx)
+        if key in seen:
+            continue
+
+        m_lats = all_lats[idx]
+        m_lons = all_lons[idx]
+        excluded = False
+        for exc_lats, exc_lons in exc_arrays:
+            for lat, lon in zip(m_lats, m_lons):
+                if np.any(haversine(lat, lon, exc_lats, exc_lons) <= radius_km):
+                    excluded = True
+                    break
+            if excluded:
+                break
+        if excluded:
+            continue
+
+        stores_by_brand = {b: [] for b in inc}
+        for i in idx:
+            brand, lat, lon, name, addr = all_stores[i]
+            stores_by_brand[brand].append({'name': name, 'lat': lat, 'lon': lon, 'addr': addr})
+
+        seen[key] = {
+            'centroid': (a_lat, a_lon),
+            'stores': stores_by_brand,
+            'counts': {b: len(stores_by_brand[b]) for b in inc},
+            'total': len(idx),
+        }
+
+    districts = sorted(seen.values(), key=lambda d: d['total'], reverse=True)
+    for i, d in enumerate(districts):
+        d['id'] = i + 1
+    return districts
+
 # ── Map builders ───────────────────────────────────────────────────────────────
 
 def _legend(brands, radius_km, subject_label):
@@ -327,7 +415,7 @@ def build_single_map(subject: str, radius_km: float):
     return m
 
 def build_district_map(include_brands: tuple, exclude_brands: tuple, radius_km: float):
-    districts = compute_districts(include_brands, exclude_brands, radius_km)
+    districts = compute_districts_anchor(include_brands, exclude_brands, radius_km)
     dfs = load_data()
     m = folium.Map(location=[36.5, 127.8], zoom_start=7, tiles='cartodbpositron')
 
@@ -594,7 +682,7 @@ if single_mode:
     all_lats = result_df['위도']
     all_lons = result_df['경도']
 else:
-    districts = compute_districts(inc_tuple, exc_tuple, radius_km)
+    districts = compute_districts_anchor(inc_tuple, exc_tuple, radius_km)
     dfs_loaded = load_data()
     all_lats = pd.concat([dfs_loaded[b]['위도'] for b in include_brands])
     all_lons = pd.concat([dfs_loaded[b]['경도'] for b in include_brands])
