@@ -480,10 +480,31 @@ def get_map_html_and_var(mode: str, subject: str,
     return m.get_root().render(), m.get_name()
 
 
-def render_map_html(html: str, var_name: str, center, zoom: int, height: int = 640):
+def render_map_html(html: str, var_name: str, center, zoom: int, height: int = 640, radius_km: float = 0):
     """Render cached map HTML, optionally injecting a setView call for nav.
     The injected JS only changes when center/zoom changes, so on plain row
     clicks the html string is identical → component iframe doesn't re-render."""
+    # Show a radius circle on any store marker click; remove it on popup close.
+    # getRadius() > 100 skips the large district Circle objects (meters vs pixels).
+    r_m = int(radius_km * 1000)
+    click_js = (
+        f'<script>(function(){{'
+        f'var sc=null,t=0;'
+        f'function setup(){{'
+        f'if(typeof {var_name}==="undefined"){{if(t++<50)setTimeout(setup,100);return;}}'
+        f'{var_name}.on("popupopen",function(e){{'
+        f'var s=e.popup._source;'
+        f'if(!s||!s.getLatLng)return;'
+        f'if(typeof s.getRadius==="function"&&s.getRadius()>100)return;'
+        f'if(sc){{sc.remove();sc=null;}}'
+        f'sc=L.circle(s.getLatLng(),{{radius:{r_m},'
+        f'color:"#333",weight:1.5,dashArray:"6 4",'
+        f'fill:true,fillColor:"#333",fillOpacity:0.05}}).addTo({var_name});'
+        f'}});'
+        f'{var_name}.on("popupclose",function(){{if(sc){{sc.remove();sc=null;}}}});'
+        f'}}setTimeout(setup,300);}})();</script>'
+    )
+    html = html + click_js
     if center:
         nav_js = (
             f'<script>(function(){{var t=0;function go(){{'
@@ -607,7 +628,7 @@ with map_col:
     else:
         html, var_name = get_map_html_and_var('district', '', inc_tuple, exc_tuple, radius_km)
 
-    render_map_html(html, var_name, center, zoom, height=640)
+    render_map_html(html, var_name, center, zoom, height=640, radius_km=radius_km)
 
 # ── Table column ──────────────────────────────────────────────────────────────
 
