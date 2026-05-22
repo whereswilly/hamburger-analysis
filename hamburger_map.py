@@ -99,16 +99,21 @@ def district_label(d):
 
 def _district_polygon(stores_dict, brands):
     """Convex hull of all member stores as [[lat, lon], ...].
-    Returns None when fewer than 3 non-collinear unique points exist."""
+    Uses scipy when available; falls back to polar-angle sort (correct for
+    convex point sets, which clustered stores almost always are)."""
     coords = np.array([[s['lat'], s['lon']] for b in brands for s in stores_dict[b]])
     unique = np.unique(coords, axis=0)
-    if not _SCIPY_OK or len(unique) < 3:
+    if len(unique) < 3:
         return None
-    try:
-        hull = _ConvexHull(unique)
-        return unique[hull.vertices].tolist()
-    except Exception:
-        return None
+    if _SCIPY_OK:
+        try:
+            hull = _ConvexHull(unique)
+            return unique[hull.vertices].tolist()
+        except Exception:
+            pass
+    center = unique.mean(axis=0)
+    angles = np.arctan2(unique[:, 0] - center[0], unique[:, 1] - center[1])
+    return unique[np.argsort(angles)].tolist()
 
 @st.cache_data
 def load_data():
@@ -272,6 +277,51 @@ def compute_districts_union(include_brands: tuple, exclude_brands: tuple, radius
             'counts': {b: len(stores_by_brand[b]) for b in inc},
             'total': len(members),
         })
+
+    # Second-pass merge: district centroids within radius_km of each other
+    # are themselves Union-Find'd and their stores combined. This prevents
+    # adjacent tight sub-clusters from showing as separate overlapping shapes.
+    if len(districts) > 1:
+        dc_lats = np.array([d['centroid'][0] for d in districts])
+        dc_lons = np.array([d['centroid'][1] for d in districts])
+        m = len(districts)
+        dp = list(range(m))
+
+        def dfind(x):
+            while dp[x] != x:
+                dp[x] = dp[dp[x]]
+                x = dp[x]
+            return x
+
+        for i in range(m):
+            dists2 = haversine(dc_lats[i], dc_lons[i], dc_lats[i+1:], dc_lons[i+1:])
+            for offset in np.where(dists2 <= radius_km)[0]:
+                ri, rj = dfind(i), dfind(i + 1 + int(offset))
+                if ri != rj:
+                    dp[ri] = rj
+
+        groups = defaultdict(list)
+        for i in range(m):
+            groups[dfind(i)].append(i)
+
+        merged = []
+        for idxs in groups.values():
+            if len(idxs) == 1:
+                merged.append(districts[idxs[0]])
+                continue
+            stores_by_brand = {b: [] for b in inc}
+            for idx in idxs:
+                for b in inc:
+                    stores_by_brand[b].extend(districts[idx]['stores'][b])
+            all_lats = [s['lat'] for b in inc for s in stores_by_brand[b]]
+            all_lons = [s['lon'] for b in inc for s in stores_by_brand[b]]
+            merged.append({
+                'centroid': (float(np.mean(all_lats)), float(np.mean(all_lons))),
+                'stores': stores_by_brand,
+                'counts': {b: len(stores_by_brand[b]) for b in inc},
+                'total': sum(len(v) for v in stores_by_brand.values()),
+            })
+        districts = merged
 
     districts.sort(key=lambda d: d['total'], reverse=True)
     for i, d in enumerate(districts):
@@ -589,10 +639,12 @@ def build_district_map(include_brands: tuple, exclude_brands: tuple, radius_km: 
 # script — not the map) gets the cached HTML instantly. Streamlit's component
 # diffing then skips re-rendering the iframe because the HTML didn't change.
 
+_MAP_VERSION = 3  # increment to bust the cached map HTML
+
 @st.cache_data
 def get_map_html_and_var(mode: str, subject: str,
                          inc_tuple: tuple, exc_tuple: tuple,
-                         radius_km: float):
+                         radius_km: float, version: int = _MAP_VERSION):
     """Returns (html_string, leaflet_map_variable_name) for the requested map."""
     if mode == 'single':
         m = build_single_map(subject, radius_km)
@@ -727,21 +779,17 @@ if not single_mode:
         f'**District 모드 (Union-Find)** — ✓ 선택한 브랜드({brands_str})가 모두 포함된 구역을 탐색합니다.  \n'
         f'연결 반경 **{radius_km}km** · 현재 조건 충족 구역: **{len(districts)}개**'
     )
-    with st.expander('District 탐색 방식 설명'):
+    with st.expander('District 탐색 방식'):
         st.markdown(
-            '#### Union-Find (연결 성분) 방식\n'
-            '선택한 브랜드의 모든 매장을 노드로 보고, '
-            '두 매장 간 거리가 **연결 반경** 이하이면 같은 구역으로 묶습니다(Union). '
-            '이 연결은 **전이적**으로 적용됩니다 — A↔B, B↔C이면 A·B·C가 하나의 구역이 됩니다.\n\n'
-            '묶인 구역이 선택한 **모든 브랜드를 1개 이상** 포함할 때만 District로 채택됩니다.\n\n'
-            '#### 지도 표시: Convex Hull 폴리곤\n'
-            '구역 경계는 소속 매장들의 **실제 외곽선(Convex Hull)**으로 그려집니다. '
-            '이는 고정 반경 원보다 실제 입지 범위를 정확하게 반영합니다.\n\n'
-            '#### Radius 원 방식 대비 장점\n'
-            '앵커 기반 반경 원 방식은 동일 지역에서 앵커마다 원을 하나씩 그리기 때문에 '
-            '같은 동네에 원이 여러 개 겹치는 문제가 발생합니다. '
-            '겹친 원들의 실질적 의미는 결국 그 원들의 **합집합(Union)** — '
-            'Union-Find 결과와 동일하므로, 처음부터 Union 구역을 Convex Hull로 표시하는 것이 더 정확하고 깔끔합니다.'
+            '**구역 묶음 기준**  \n'
+            '반경 이내에 있는 매장끼리 연결합니다. A↔B, B↔C면 A·B·C 전체가 하나의 구역이 됩니다. '
+            '선택한 브랜드가 모두 들어있는 묶음만 District로 표시합니다.\n\n'
+            '**지도 표시**  \n'
+            '경계는 소속 매장들을 감싸는 외곽선(Convex Hull)으로 그립니다. '
+            '반경 원보다 실제 입지 범위를 정확하게 보여줍니다.\n\n'
+            '**반경 원 방식 대비**  \n'
+            '반경 원 방식은 같은 동네 매장들이 앵커마다 원을 하나씩 만들어 겹쳐 나옵니다. '
+            '겹친 원들의 합이 결국 Union이라 처음부터 Union으로 묶어서 보여주는 게 더 정확합니다.'
         )
 
 map_col, table_col = st.columns([map_w, tbl_w])
