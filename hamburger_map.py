@@ -516,14 +516,17 @@ def build_district_map(include_brands: tuple, exclude_brands: tuple, radius_km: 
     # Leaflet draws later additions on top; doing this in a separate loop
     # ensures one district's store dots can never cover another's label.
     for d in districts:
-        clat, clon = d['centroid']
         region = district_label(d)
-        # Width grows with label content so the pill doesn't clip
         text = f'D{d["id"]} {region}' if region else f'D{d["id"]}'
-        # Korean chars take ~12px each at this font size; ASCII is narrower
         approx_w = 18 + sum(12 if ord(c) > 127 else 7 for c in text)
+        # Place label at geometric centroid of member stores so it doesn't
+        # land on any specific store marker dot.
+        member_lats = [s['lat'] for b in include_brands for s in d['stores'][b]]
+        member_lons = [s['lon'] for b in include_brands for s in d['stores'][b]]
+        label_lat = float(np.mean(member_lats))
+        label_lon = float(np.mean(member_lons))
         folium.Marker(
-            [clat, clon],
+            [label_lat, label_lon],
             tooltip=f"District #{d['id']}  ({d['total']}개)  {region}".strip(),
             icon=folium.DivIcon(
                 html=f'<div style="font-size:11px;font-weight:bold;color:#7B1FA2;'
