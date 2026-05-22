@@ -7,6 +7,11 @@ from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 import streamlit.components.v1 as components
 from io import BytesIO
 from collections import defaultdict, Counter
+try:
+    from scipy.spatial import ConvexHull as _ConvexHull
+    _SCIPY_OK = True
+except ImportError:
+    _SCIPY_OK = False
 st.set_page_config(
     page_title='햄버거 경쟁점 분석',
     page_icon='🍔',
@@ -91,6 +96,20 @@ def district_label(d):
         return ''
     return Counter(labels).most_common(1)[0][0]
 
+
+def _district_polygon(stores_dict, brands):
+    """Convex hull of all member stores as [[lat, lon], ...].
+    Returns None when fewer than 3 non-collinear unique points exist."""
+    coords = np.array([[s['lat'], s['lon']] for b in brands for s in stores_dict[b]])
+    unique = np.unique(coords, axis=0)
+    if not _SCIPY_OK or len(unique) < 3:
+        return None
+    try:
+        hull = _ConvexHull(unique)
+        return unique[hull.vertices].tolist()
+    except Exception:
+        return None
+
 @st.cache_data
 def load_data():
     BASE = 'Hamburger Competitors'
@@ -171,9 +190,15 @@ def compute_single(subject: str, radius_km: float):
 
 @st.cache_data
 def compute_districts_union(include_brands: tuple, exclude_brands: tuple, radius_km: float):
-    """Union-Find clustering — kept for reference. NOT used in the UI.
-    Known issue: transitive chaining can produce districts whose stores extend
-    beyond radius_km from the displayed centroid circle."""
+    """Union-Find clustering.
+
+    Two stores are linked if they are within radius_km of each other.
+    Linkage is transitive: A-B and B-C → A, B, C belong to one district.
+    Each resulting component must contain at least one store per included brand.
+
+    The district boundary is displayed as a convex hull polygon of the member
+    stores, so transitive chaining is not a visual problem — the polygon shows
+    the true geographic footprint rather than an artificial fixed-radius circle."""
     if len(include_brands) < 2:
         return []
 
@@ -415,7 +440,7 @@ def build_single_map(subject: str, radius_km: float):
     return m
 
 def build_district_map(include_brands: tuple, exclude_brands: tuple, radius_km: float):
-    districts = compute_districts_anchor(include_brands, exclude_brands, radius_km)
+    districts = compute_districts_union(include_brands, exclude_brands, radius_km)
     dfs = load_data()
     m = folium.Map(location=[36.5, 127.8], zoom_start=7, tiles='cartodbpositron')
 
@@ -491,13 +516,23 @@ def build_district_map(include_brands: tuple, exclude_brands: tuple, radius_km: 
             f'</div>'
         )
 
-        folium.Circle(
-            [clat, clon], radius=radius_km * 1000,
-            color='#7B1FA2', weight=1.5,
-            fill=True, fill_opacity=0.07,
-            popup=folium.Popup(popup_html, max_width=270),
-            tooltip=f"District #{d['id']}  ({d['total']}개)"
-        ).add_to(m)
+        poly = _district_polygon(d['stores'], include_brands)
+        if poly:
+            folium.Polygon(
+                locations=poly,
+                color='#7B1FA2', weight=1.5,
+                fill=True, fill_opacity=0.12,
+                popup=folium.Popup(popup_html, max_width=270),
+                tooltip=f"District #{d['id']}  ({d['total']}개)"
+            ).add_to(m)
+        else:
+            folium.Circle(
+                [clat, clon], radius=radius_km * 1000,
+                color='#7B1FA2', weight=1.5,
+                fill=True, fill_opacity=0.07,
+                popup=folium.Popup(popup_html, max_width=270),
+                tooltip=f"District #{d['id']}  ({d['total']}개)"
+            ).add_to(m)
 
         for b in include_brands:
             hex_c = BRAND_CFG[b]['hex']
@@ -519,14 +554,9 @@ def build_district_map(include_brands: tuple, exclude_brands: tuple, radius_km: 
         region = district_label(d)
         text = f'D{d["id"]} {region}' if region else f'D{d["id"]}'
         approx_w = 18 + sum(12 if ord(c) > 127 else 7 for c in text)
-        # Place label at geometric centroid of member stores so it doesn't
-        # land on any specific store marker dot.
-        member_lats = [s['lat'] for b in include_brands for s in d['stores'][b]]
-        member_lons = [s['lon'] for b in include_brands for s in d['stores'][b]]
-        label_lat = float(np.mean(member_lats))
-        label_lon = float(np.mean(member_lons))
+        clat, clon = d['centroid']  # union-find centroid = mean of all member stores
         folium.Marker(
-            [label_lat, label_lon],
+            [clat, clon],
             tooltip=f"District #{d['id']}  ({d['total']}개)  {region}".strip(),
             icon=folium.DivIcon(
                 html=f'<div style="font-size:11px;font-weight:bold;color:#7B1FA2;'
@@ -539,7 +569,7 @@ def build_district_map(include_brands: tuple, exclude_brands: tuple, radius_km: 
         ).add_to(m)
 
     legend_items = (
-        ['<span style="color:#7B1FA2">○</span> District (반경 ' + str(radius_km) + 'km)']
+        ['<span style="color:#7B1FA2">◇</span> District (Union 구역, 연결 반경 ' + str(radius_km) + 'km)']
         + [f'<span style="color:{BRAND_CFG[b]["hex"]}">◉</span> {b} (✓ 포함)' for b in include_brands]
         + [f'<span style="color:{BRAND_CFG[b]["hex"]}">·</span> {b}' for b in ALL_BRANDS if b not in include_brands]
     )
@@ -652,7 +682,7 @@ st.markdown('---')
 
 with st.sidebar:
     st.header('분석 설정')
-    radius_km = st.slider('반경 (km)', min_value=0.5, max_value=10.0, value=0.5, step=0.5)
+    radius_km = st.slider('반경 (km)', min_value=0.3, max_value=10.0, value=0.5, step=0.1)
     st.markdown('---')
     st.markdown('**레이아웃** (지도 : 목록)')
     layout_opt = st.select_slider(
@@ -685,7 +715,7 @@ if single_mode:
     all_lats = result_df['위도']
     all_lons = result_df['경도']
 else:
-    districts = compute_districts_anchor(inc_tuple, exc_tuple, radius_km)
+    districts = compute_districts_union(inc_tuple, exc_tuple, radius_km)
     dfs_loaded = load_data()
     all_lats = pd.concat([dfs_loaded[b]['위도'] for b in include_brands])
     all_lons = pd.concat([dfs_loaded[b]['경도'] for b in include_brands])
@@ -694,10 +724,25 @@ else:
 if not single_mode:
     brands_str = ' + '.join(include_brands)
     st.info(
-        f'**District 모드** — ✓ 선택한 브랜드({brands_str})가 모두 반경 **{radius_km}km** 이내에 '
-        f'공존하는 구역을 표시합니다. 포함이나 제외가 선택되지 않은 브랜드는 구역에 포함될 수도, 되지 않을 수도 있습니다.  \n'
-        f'현재 조건 충족 구역: **{len(districts)}개**'
+        f'**District 모드 (Union-Find)** — ✓ 선택한 브랜드({brands_str})가 모두 포함된 구역을 탐색합니다.  \n'
+        f'연결 반경 **{radius_km}km** · 현재 조건 충족 구역: **{len(districts)}개**'
     )
+    with st.expander('District 탐색 방식 설명'):
+        st.markdown(
+            '#### Union-Find (연결 성분) 방식\n'
+            '선택한 브랜드의 모든 매장을 노드로 보고, '
+            '두 매장 간 거리가 **연결 반경** 이하이면 같은 구역으로 묶습니다(Union). '
+            '이 연결은 **전이적**으로 적용됩니다 — A↔B, B↔C이면 A·B·C가 하나의 구역이 됩니다.\n\n'
+            '묶인 구역이 선택한 **모든 브랜드를 1개 이상** 포함할 때만 District로 채택됩니다.\n\n'
+            '#### 지도 표시: Convex Hull 폴리곤\n'
+            '구역 경계는 소속 매장들의 **실제 외곽선(Convex Hull)**으로 그려집니다. '
+            '이는 고정 반경 원보다 실제 입지 범위를 정확하게 반영합니다.\n\n'
+            '#### Radius 원 방식 대비 장점\n'
+            '앵커 기반 반경 원 방식은 동일 지역에서 앵커마다 원을 하나씩 그리기 때문에 '
+            '같은 동네에 원이 여러 개 겹치는 문제가 발생합니다. '
+            '겹친 원들의 실질적 의미는 결국 그 원들의 **합집합(Union)** — '
+            'Union-Find 결과와 동일하므로, 처음부터 Union 구역을 Convex Hull로 표시하는 것이 더 정확하고 깔끔합니다.'
+        )
 
 map_col, table_col = st.columns([map_w, tbl_w])
 
